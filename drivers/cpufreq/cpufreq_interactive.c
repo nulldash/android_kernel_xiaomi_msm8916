@@ -75,7 +75,11 @@ static int migration_register_count;
 static struct mutex sched_lock;
 
 /* Target load.  Lower values result in higher CPU speeds. */
+#ifdef CONFIG_MACH_XIAOMI_IDO
+#define DEFAULT_TARGET_LOAD 70
+#else
 #define DEFAULT_TARGET_LOAD 90
+#endif
 static unsigned int default_target_loads[] = {DEFAULT_TARGET_LOAD};
 
 #define DEFAULT_TIMER_RATE (20 * USEC_PER_MSEC)
@@ -98,7 +102,11 @@ struct cpufreq_interactive_tunables {
 	 * The minimum amount of time to spend at a frequency before we can ramp
 	 * down.
 	 */
+#ifdef CONFIG_MACH_XIAOMI_IDO
+#define DEFAULT_MIN_SAMPLE_TIME (50 * USEC_PER_MSEC)
+#else
 #define DEFAULT_MIN_SAMPLE_TIME (80 * USEC_PER_MSEC)
+#endif
 	unsigned long min_sample_time;
 	/*
 	 * The sample rate of the timer used to increase frequency
@@ -121,7 +129,11 @@ struct cpufreq_interactive_tunables {
 	 * Max additional time to wait in idle, beyond timer_rate, at speeds
 	 * above minimum before wakeup to reduce speed, or -1 if unnecessary.
 	 */
+#ifdef CONFIG_MACH_XIAOMI_IDO
+#define DEFAULT_TIMER_SLACK (2 * DEFAULT_TIMER_RATE)
+#else
 #define DEFAULT_TIMER_SLACK (4 * DEFAULT_TIMER_RATE)
+#endif
 	int timer_slack_val;
 	bool io_is_busy;
 
