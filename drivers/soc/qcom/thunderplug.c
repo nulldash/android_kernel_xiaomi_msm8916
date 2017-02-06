@@ -34,20 +34,39 @@
 #define DEFAULT_CPU_LOAD_THRESHOLD   (65)
 #define MIN_CPU_LOAD_THRESHOLD       (10)
 
+#ifdef CONFIG_MACH_XIAOMI_IDO
 #define HOTPLUG_ENABLED              (1)
 #define DEFAULT_HOTPLUG_STYLE         HOTPLUG_PERCORE
+#else
+#define HOTPLUG_ENABLED              (0)
+#define DEFAULT_HOTPLUG_STYLE         HOTPLUG_SCHED
+#endif
 #define DEFAULT_SCHED_MODE            BALANCED
 
 #define DEF_SAMPLING_MS	             (500)
-#define MIN_SAMLING_MS               (50)
+#ifdef CONFIG_MACH_XIAOMI_IDO
+#define MIN_SAMPLING_MS               (250)
+#else
+#define MIN_SAMPLING_MS               (50)
+#endif
 #define MIN_CPU_UP_TIME              (750)
 #define TOUCH_BOOST_ENABLED          (0)
+
+#ifdef CONFIG_MACH_XIAOMI_IDO
+#define MAX_CPU_SUSPEND               NR_CPUS / 2
+#endif
 
 static bool isSuspended = false;
 
 struct notifier_block lcd_worker;
 
-static int suspend_cpu_num = 4, resume_cpu_num = (NR_CPUS -1);
+#ifdef CONFIG_MACH_XIAOMI_IDO
+static int suspend_cpu_num = MAX_CPU_SUSPEND;
+static int resume_cpu_num = (NR_CPUS -1);
+#else
+static int suspend_cpu_num = 2;
+static int resume_cpu_num = (NR_CPUS -1);
+#endif
 static int endurance_level = 0;
 static int core_limit = NR_CPUS;
 
@@ -279,7 +298,7 @@ static ssize_t __ref thunderplug_sampling_store(struct kobject *kobj, struct kob
 {
 	int val;
 	sscanf(buf, "%d", &val);
-	if(val > MIN_SAMLING_MS)
+	if(val > MIN_SAMPLING_MS)
 		sampling_time = val;
 
 	return count;
