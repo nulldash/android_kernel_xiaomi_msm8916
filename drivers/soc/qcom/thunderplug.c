@@ -32,21 +32,23 @@
 #define DRIVER_SUBVER                 0
 
 #define DEFAULT_CPU_LOAD_THRESHOLD   (65)
-#define MIN_CPU_LOAD_THRESHOLD       (10)
 
 #ifdef CONFIG_MACH_XIAOMI_IDO
+#define MIN_CPU_LOAD_THRESHOLD       (25)
 #define HOTPLUG_ENABLED              (1)
 #define DEFAULT_HOTPLUG_STYLE         HOTPLUG_PERCORE
 #else
+#define MIN_CPU_LOAD_THRESHOLD       (10)
 #define HOTPLUG_ENABLED              (0)
 #define DEFAULT_HOTPLUG_STYLE         HOTPLUG_SCHED
 #endif
 #define DEFAULT_SCHED_MODE            BALANCED
 
-#define DEF_SAMPLING_MS	             (500)
 #ifdef CONFIG_MACH_XIAOMI_IDO
+#define DEF_SAMPLING_MS	             (1500)
 #define MIN_SAMPLING_MS               (250)
 #else
+#define DEF_SAMPLING_MS	             (500)
 #define MIN_SAMPLING_MS               (50)
 #endif
 #define MIN_CPU_UP_TIME              (750)
