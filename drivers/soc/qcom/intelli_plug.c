@@ -36,14 +36,23 @@
 #define START_DELAY_MS			HZ * 20
 #define MIN_INPUT_INTERVAL		150 * 1000L
 #define BOOST_LOCK_DUR			2500 * 1000L
+#ifdef CONFIG_MACH_XIAOMI_IDO
 #define DEFAULT_NR_CPUS_BOOSTED		NR_CPUS / 4
-#define DEFAULT_MIN_CPUS_ONLINE		NR_CPUS /4
+#define DEFAULT_MIN_CPUS_ONLINE		NR_CPUS / 4
+#else
+#define DEFAULT_NR_CPUS_BOOSTED		1
+#define DEFAULT_MIN_CPUS_ONLINE		1
+#endif
 #define DEFAULT_MAX_CPUS_ONLINE		NR_CPUS
 #define DEFAULT_NR_FSHIFT		DEFAULT_MAX_CPUS_ONLINE - 1
 #define DEFAULT_DOWN_LOCK_DUR		2500
 #if defined(CONFIG_LCD_NOTIFY) || defined(CONFIG_POWERSUSPEND) || defined(CONFIG_HAS_EARLYSUSPEND)
 #define DEFAULT_SUSPEND_DEFER_TIME	10
+#ifdef CONFIG_MACH_XIAOMI_IDO
 #define DEFAULT_MAX_CPUS_ONLINE_SUSP	NR_CPUS / 2
+#else
+#define DEFAULT_MAX_CPUS_ONLINE_SUSP	1
+#endif
 #endif
 
 #define CAPACITY_RESERVE		50
@@ -81,7 +90,11 @@ struct ip_cpu_info {
 static DEFINE_PER_CPU(struct ip_cpu_info, ip_info);
 
 /* HotPlug Driver controls */
+#ifdef CONFIG_MACH_XIAOMI_IDO
 static atomic_t intelli_plug_active = ATOMIC_INIT(1);
+#else
+static atomic_t intelli_plug_active = ATOMIC_INIT(0);
+#endif
 static unsigned int cpus_boosted = DEFAULT_NR_CPUS_BOOSTED;
 static unsigned int min_cpus_online = DEFAULT_MIN_CPUS_ONLINE;
 static unsigned int max_cpus_online = DEFAULT_MAX_CPUS_ONLINE;
@@ -101,7 +114,11 @@ static unsigned int target_cpus = 0;
 static u64 boost_lock_duration = BOOST_LOCK_DUR;
 static unsigned int def_sampling_ms = DEF_SAMPLING_MS;
 static unsigned int nr_fshift = DEFAULT_NR_FSHIFT;
+#ifdef CONFIG_MACH_XIAOMI_IDO
+static unsigned int nr_run_hysteresis = DEFAULT_MAX_CPUS_ONLINE;
+#else
 static unsigned int nr_run_hysteresis = DEFAULT_MAX_CPUS_ONLINE * 2;
+#endif
 static unsigned int debug_intelli_plug = 0;
 
 #define dprintk(msg...)		\
