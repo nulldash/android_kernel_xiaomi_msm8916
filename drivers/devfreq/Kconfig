@@ -82,19 +82,11 @@ config DEVFREQ_GOV_MSM_ADRENO_TZ
 config ADRENO_IDLER
 	tristate "MSM Adreno idler"
 	depends on DEVFREQ_GOV_MSM_ADRENO_TZ
-	default y
 	help
 	  Uses a different calculation method on top of Adreno TZ
 	  just for calculating frequency for idle to reduce the
 	  wasted power coming from stock Adreno TZ while
 	  maintaining high-performance.
-
-config SIMPLE_GPU_ALGORITHM
-	bool "Simple GPU algorithm"
-	depends on DEVFREQ_GOV_MSM_ADRENO_TZ
-	default y
-	help
-	  Simple user configurable GPU controlling algorithm
 
 config MSM_BIMC_BWMON
 	tristate "MSM BIMC Bandwidth monitor hardware"
@@ -113,6 +105,15 @@ config ARMBW_HWMON
 	  monitor the traffic coming from each core to the bus. It also has the
 	  capability to raise an IRQ when the counter overflows, which can be
 	  used to get an IRQ when the count exceeds a certain value
+
+config MSMCCI_HWMON
+	tristate "MSM CCI Cache monitor hardware"
+	depends on ARCH_MSM
+	help
+	  MSM CCI has additional PMU counters that can be used to monitor
+	  cache requests. MSM CCI hardware monitor device configures these
+	  registers to monitor cache and inform governor. It can also set an
+	  IRQ when count exceeds a programmable limit.
 
 config DEVFREQ_GOV_MSM_GPUBW_MON
 	tristate "GPU BW voting governor"
