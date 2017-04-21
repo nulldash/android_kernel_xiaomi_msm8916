@@ -23,9 +23,7 @@
 #include <linux/kthread.h>
 #include <linux/slab.h>
 #include <asm/cputime.h>
-#ifdef CONFIG_STATE_NOTIFIER
-#include <linux/state_notifier.h>
-#endif
+#include <linux/display_state.h>
 
 struct cpufreq_interactive_policyinfo {
 	struct timer_list policy_timer;
@@ -71,11 +69,7 @@ static int migration_register_count;
 static struct mutex sched_lock;
 
 /* Target load.  Lower values result in higher CPU speeds. */
-#ifdef CONFIG_MACH_XIAOMI_IDO
-#define DEFAULT_TARGET_LOAD 80
-#else
 #define DEFAULT_TARGET_LOAD 90
-#endif
 static unsigned int default_target_loads[] = {DEFAULT_TARGET_LOAD};
 
 #define DEFAULT_TIMER_RATE (20 * USEC_PER_MSEC)
@@ -89,11 +83,7 @@ struct cpufreq_interactive_tunables {
 	/* Hi speed to bump to from lo speed when load burst (default max) */
 	unsigned int hispeed_freq;
 	/* Go to hi speed when CPU load at or above this value. */
-#ifdef CONFIG_MACH_XIAOMI_IDO
-#define DEFAULT_GO_HISPEED_LOAD 90
-#else
 #define DEFAULT_GO_HISPEED_LOAD 99
-#endif
 	unsigned long go_hispeed_load;
 
 	/* Target load. Lower values result in higher CPU speeds. */
@@ -104,19 +94,13 @@ struct cpufreq_interactive_tunables {
 	 * The minimum amount of time to spend at a frequency before we can ramp
 	 * down.
 	 */
-#ifdef CONFIG_MACH_XIAOMI_IDO
-#define DEFAULT_MIN_SAMPLE_TIME (50 * USEC_PER_MSEC)
-#else
 #define DEFAULT_MIN_SAMPLE_TIME (80 * USEC_PER_MSEC)
-#endif
 	unsigned long min_sample_time;
 	/*
 	 * The sample rate of the timer used to increase frequency
 	 */
 	unsigned long timer_rate;
-#ifdef CONFIG_STATE_NOTIFIER
 	unsigned long timer_rate_prev;
-#endif
 	/*
 	 * Wait this long before raising speed above hispeed, by default a
 	 * single timer interval.
@@ -431,6 +415,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 	unsigned long max_cpu;
 	int i, fcpu;
 	struct cpufreq_govinfo govinfo;
+	const bool display_on = is_display_on();
 
 	if (!down_read_trylock(&ppol->enable_sem))
 		return;
@@ -445,18 +430,16 @@ static void cpufreq_interactive_timer(unsigned long data)
 	spin_lock_irqsave(&ppol->load_lock, flags);
 	ppol->last_evaluated_jiffy = get_jiffies_64();
 
-#ifdef CONFIG_STATE_NOTIFIER
-	if (!state_suspended &&
+	if (display_on &&
 		tunables->timer_rate != tunables->timer_rate_prev)
 		tunables->timer_rate = tunables->timer_rate_prev;
-	else if (state_suspended &&
+	else if (!display_on &&
 		tunables->timer_rate != DEFAULT_TIMER_RATE_SUSP) {
 		tunables->timer_rate_prev = tunables->timer_rate;
 		tunables->timer_rate
 			= max(tunables->timer_rate,
 				DEFAULT_TIMER_RATE_SUSP);
 	}
-#endif
 
 #ifdef CONFIG_SCHED_FREQ_INPUT
 	if (tunables->use_sched_load)
@@ -508,9 +491,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 	spin_lock_irqsave(&ppol->target_freq_lock, flags);
 	cpu_load = loadadjfreq / ppol->policy->cur;
 	tunables->boosted = cpu_load >= tunables->go_hispeed_load;
-#ifdef CONFIG_STATE_NOTIFIER
-	tunables->boosted = tunables->boosted && !state_suspended;
-#endif
+	tunables->boosted = tunables->boosted && display_on;
 	this_hispeed_freq = max(tunables->hispeed_freq, ppol->policy->min);
 
 	if (tunables->boosted) {
@@ -615,6 +596,7 @@ static int cpufreq_interactive_speedchange_task(void *data)
 	unsigned long flags;
 	struct cpufreq_interactive_policyinfo *ppol;
 	struct cpufreq_interactive_tunables *tunables;
+	const bool display_on = is_display_on();
 
 	while (1) {
 		set_current_state(TASK_INTERRUPTIBLE);
@@ -647,11 +629,7 @@ static int cpufreq_interactive_speedchange_task(void *data)
 
  			if (ppol->target_freq != ppol->policy->cur) {
 				tunables = ppol->policy->governor_data;
-#ifdef CONFIG_STATE_NOTIFIER
-				if (tunables->powersave_bias || state_suspended)
-#else
-				if (tunables->powersave_bias)
-#endif
+				if (tunables->powersave_bias || !display_on)
 					__cpufreq_driver_target(ppol->policy,
 								ppol->target_freq,
 								CPUFREQ_RELATION_C);
@@ -977,9 +955,7 @@ static ssize_t store_timer_rate(struct cpufreq_interactive_tunables *tunables,
 		pr_warn("timer_rate not aligned to jiffy. Rounded up to %lu\n",
 			val_round);
 	tunables->timer_rate = val_round;
-#ifdef CONFIG_STATE_NOTIFIER
 	tunables->timer_rate_prev = val_round;
-#endif
 
 	if (!tunables->use_sched_load)
 		return count;
@@ -990,9 +966,7 @@ static ssize_t store_timer_rate(struct cpufreq_interactive_tunables *tunables,
 		t = per_cpu(polinfo, cpu)->cached_tunables;
 		if (t && t->use_sched_load) {
 			t->timer_rate = val_round;
-#ifdef CONFIG_STATE_NOTIFIER
 			t->timer_rate_prev = val_round;
-#endif
 		}
 	}
 	set_window_helper(tunables);
@@ -1365,9 +1339,7 @@ static struct cpufreq_interactive_tunables *alloc_tunable(
 	tunables->ntarget_loads = ARRAY_SIZE(default_target_loads);
 	tunables->min_sample_time = DEFAULT_MIN_SAMPLE_TIME;
 	tunables->timer_rate = DEFAULT_TIMER_RATE;
-#ifdef CONFIG_STATE_NOTIFIER
 	tunables->timer_rate_prev = DEFAULT_TIMER_RATE;
-#endif
 	tunables->timer_slack_val = DEFAULT_TIMER_SLACK;
 
 	spin_lock_init(&tunables->target_loads_lock);
