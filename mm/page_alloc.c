@@ -479,29 +479,6 @@ static inline void rmv_page_order(struct page *page)
 }
 
 /*
- * Locate the struct page for both the matching buddy in our
- * pair (buddy1) and the combined O(n+1) page they form (page).
- *
- * 1) Any buddy B1 will have an order O twin B2 which satisfies
- * the following equation:
- *     B2 = B1 ^ (1 << O)
- * For example, if the starting buddy (buddy2) is #8 its order
- * 1 buddy is #10:
- *     B2 = 8 ^ (1 << 1) = 8 ^ 2 = 10
- *
- * 2) Any buddy B will have an order O+1 parent P which
- * satisfies the following equation:
- *     P = B & ~(1 << O)
- *
- * Assumption: *_mem_map is contiguous at least up to MAX_ORDER
- */
-static inline unsigned long
-__find_buddy_index(unsigned long page_idx, unsigned int order)
-{
-	return page_idx ^ (1 << order);
-}
-
-/*
  * This function checks whether a page is free && is the buddy
  * we can do coalesce a page and its buddy if
  * (a) the buddy is not in a hole &&
@@ -567,6 +544,7 @@ static inline void __free_one_page(struct page *page,
 	unsigned long combined_idx;
 	unsigned long uninitialized_var(buddy_idx);
 	struct page *buddy = NULL;
+	int max_order = MAX_ORDER;
 
 	VM_BUG_ON(!zone_is_initialized(zone));
 
@@ -575,15 +553,24 @@ static inline void __free_one_page(struct page *page,
 			return;
 
 	VM_BUG_ON(migratetype == -1);
-	if (!is_migrate_isolate(migratetype))
+	if (is_migrate_isolate(migratetype)) {
+		/*
+		 * We restrict max order of merging to prevent merge
+		 * between freepages on isolate pageblock and normal
+		 * pageblock. Without this, pageblock isolation
+		 * could cause incorrect freepage accounting.
+		 */
+		max_order = min(MAX_ORDER, pageblock_order + 1);
+	} else {
 		__mod_zone_freepage_state(zone, 1 << order, migratetype);
+	}
 
-	page_idx = page_to_pfn(page) & ((1 << MAX_ORDER) - 1);
+	page_idx = page_to_pfn(page) & ((1 << max_order) - 1);
 
 	VM_BUG_ON(page_idx & ((1 << order) - 1));
 	VM_BUG_ON(bad_range(zone, page));
 
-	while (order < MAX_ORDER-1) {
+	while (order < max_order - 1) {
 		buddy_idx = __find_buddy_index(page_idx, order);
 		buddy = page + (buddy_idx - page_idx);
 		if (!page_is_buddy(page, buddy, order))
@@ -1165,36 +1152,21 @@ retry_reserve:
 	return page;
 }
 
-static struct page *__rmqueue_cma(struct zone *zone, unsigned int order,
-							int migratetype)
+#ifdef CONFIG_CMA
+static struct page *__rmqueue_cma(struct zone *zone, unsigned int order)
 {
 	struct page *page = 0;
-#ifdef CONFIG_CMA
-	if (migratetype == MIGRATE_MOVABLE && !zone->cma_alloc)
-		page = __rmqueue_smallest(zone, order, MIGRATE_CMA);
-	if (!page)
-#endif
-retry_reserve :
-		page = __rmqueue_smallest(zone, order, migratetype);
-
-
-	if (unlikely(!page) && migratetype != MIGRATE_RESERVE) {
-		page = __rmqueue_fallback(zone, order, migratetype);
-
-		/*
-		 * Use MIGRATE_RESERVE rather than fail an allocation. goto
-		 * is used because __rmqueue_smallest is an inline function
-		 * and we want just one call site
-		 */
-		if (!page) {
-			migratetype = MIGRATE_RESERVE;
-			goto retry_reserve;
-		}
-	}
-
-	trace_mm_page_alloc_zone_locked(page, order, migratetype);
+	if (IS_ENABLED(CONFIG_CMA))
+		if (!zone->cma_alloc)
+			page = __rmqueue_smallest(zone, order, MIGRATE_CMA);
 	return page;
 }
+#else
+static inline struct page *__rmqueue_cma(struct zone *zone, unsigned int order)
+{
+	return NULL;
+}
+#endif
 
 /*
  * Obtain a specified number of elements from the buddy allocator, all under
@@ -1203,15 +1175,21 @@ retry_reserve :
  */
 static int rmqueue_bulk(struct zone *zone, unsigned int order,
 			unsigned long count, struct list_head *list,
-			int migratetype, int cold, int cma)
+			int migratetype, int cold)
 {
 	int mt = migratetype, i;
 
 	spin_lock(&zone->lock);
 	for (i = 0; i < count; ++i) {
 		struct page *page;
-		if (cma)
-			page = __rmqueue_cma(zone, order, migratetype);
+
+		/*
+		 * If migrate type CMA is being requested only try to
+		 * satisfy the request with CMA pages to try and increase
+		 * CMA utlization.
+		 */
+		if (is_migrate_cma(migratetype))
+			page = __rmqueue_cma(zone, order);
 		else
 			page = __rmqueue(zone, order, migratetype);
 		if (unlikely(page == NULL))
@@ -1244,6 +1222,27 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
 	__mod_zone_page_state(zone, NR_FREE_PAGES, -(i << order));
 	spin_unlock(&zone->lock);
 	return i;
+}
+
+/*
+ * Return the pcp list that corresponds to the migrate type if that list isn't
+ * empty.
+ * If the list is empty return NULL.
+ */
+static struct list_head *get_populated_pcp_list(struct zone *zone,
+			unsigned int order, struct per_cpu_pages *pcp,
+			int migratetype, int cold)
+{
+	struct list_head *list = &pcp->lists[migratetype];
+	if (list_empty(list)) {
+		pcp->count += rmqueue_bulk(zone, order,
+				pcp->batch, list,
+				migratetype, cold);
+
+		if (list_empty(list))
+			list = NULL;
+	}
+	return list;
 }
 
 #ifdef CONFIG_NUMA
@@ -1416,8 +1415,7 @@ void free_hot_cold_page(struct page *page, int cold)
 	 * excessively into the page allocator
 	 */
 	if (migratetype >= MIGRATE_PCPTYPES) {
-		if (unlikely(is_migrate_isolate(migratetype)) ||
-			     is_migrate_cma(migratetype)) {
+		if (unlikely(is_migrate_isolate(migratetype))) {
 			free_one_page(zone, page, 0, migratetype);
 			goto out;
 		}
@@ -1481,7 +1479,7 @@ void split_page(struct page *page, unsigned int order)
 }
 EXPORT_SYMBOL_GPL(split_page);
 
-static int __isolate_free_page(struct page *page, unsigned int order)
+int __isolate_free_page(struct page *page, unsigned int order)
 {
 	unsigned long watermark;
 	struct zone *zone;
@@ -1559,23 +1557,33 @@ struct page *buffered_rmqueue(struct zone *preferred_zone,
 			int migratetype)
 {
 	unsigned long flags;
-	struct page *page;
+	struct page *page = NULL;
 	int cold = !!(gfp_flags & __GFP_COLD);
 
 again:
 	if (likely(order == 0)) {
 		struct per_cpu_pages *pcp;
-		struct list_head *list;
+		struct list_head *list = NULL;
 
 		local_irq_save(flags);
 		pcp = &this_cpu_ptr(zone->pageset)->pcp;
-		list = &pcp->lists[migratetype];
-		if (list_empty(list)) {
-			pcp->count += rmqueue_bulk(zone, 0,
-					pcp->batch, list,
-					migratetype, cold,
-					gfp_flags & __GFP_CMA);
-			if (unlikely(list_empty(list)))
+
+		/* First try to get CMA pages */
+		if (migratetype == MIGRATE_MOVABLE &&
+			gfp_flags & __GFP_CMA) {
+			list = get_populated_pcp_list(zone, 0, pcp,
+					get_cma_migrate_type(), cold);
+		}
+
+		if (list == NULL) {
+			/*
+			 * Either CMA is not suitable or there are no free CMA
+			 * pages.
+			 */
+			list = get_populated_pcp_list(zone, 0, pcp,
+				migratetype, cold);
+			if (unlikely(list == NULL) ||
+				unlikely(list_empty(list)))
 				goto failed;
 		}
 
@@ -1601,10 +1609,12 @@ again:
 			WARN_ON_ONCE(order > 1);
 		}
 		spin_lock_irqsave(&zone->lock, flags);
-		if (gfp_flags & __GFP_CMA)
-			page = __rmqueue_cma(zone, order, migratetype);
-		else
+		if (migratetype == MIGRATE_MOVABLE && gfp_flags & __GFP_CMA)
+			page = __rmqueue_cma(zone, order);
+
+		if (!page)
 			page = __rmqueue(zone, order, migratetype);
+
 		spin_unlock(&zone->lock);
 		if (!page)
 			goto failed;
@@ -2204,6 +2214,14 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 	}
 
 	/*
+	 * PM-freezer should be notified that there might be an OOM killer on
+	 * its way to kill and wake somebody up. This is too early and we might
+	 * end up not killing anything but false positives are acceptable.
+	 * See freeze_processes.
+	 */
+	note_oom_kill();
+
+	/*
 	 * Go through the zonelist yet one more time, keep very high watermark
 	 * here, this is only to catch a parallel oom killing, we must fail if
 	 * we're still under heavy pressure.
@@ -2441,7 +2459,7 @@ static inline int
 gfp_to_alloc_flags(gfp_t gfp_mask)
 {
 	int alloc_flags = ALLOC_WMARK_MIN | ALLOC_CPUSET;
-	const gfp_t wait = gfp_mask & __GFP_WAIT;
+	const bool atomic = !(gfp_mask & (__GFP_WAIT | __GFP_NO_KSWAPD));
 
 	/* __GFP_HIGH is assumed to be the same as ALLOC_HIGH to save a branch. */
 	BUILD_BUG_ON(__GFP_HIGH != (__force gfp_t) ALLOC_HIGH);
@@ -2450,20 +2468,20 @@ gfp_to_alloc_flags(gfp_t gfp_mask)
 	 * The caller may dip into page reserves a bit more if the caller
 	 * cannot run direct reclaim, or if the caller has realtime scheduling
 	 * policy or is asking for __GFP_HIGH memory.  GFP_ATOMIC requests will
-	 * set both ALLOC_HARDER (!wait) and ALLOC_HIGH (__GFP_HIGH).
+	 * set both ALLOC_HARDER (atomic == true) and ALLOC_HIGH (__GFP_HIGH).
 	 */
 	alloc_flags |= (__force int) (gfp_mask & __GFP_HIGH);
 
-	if (!wait) {
+	if (atomic) {
 		/*
-		 * Not worth trying to allocate harder for
-		 * __GFP_NOMEMALLOC even if it can't schedule.
+		 * Not worth trying to allocate harder for __GFP_NOMEMALLOC even
+		 * if it can't schedule.
 		 */
-		if  (!(gfp_mask & __GFP_NOMEMALLOC))
+		if (!(gfp_mask & __GFP_NOMEMALLOC))
 			alloc_flags |= ALLOC_HARDER;
 		/*
-		 * Ignore cpuset if GFP_ATOMIC (!wait) rather than fail alloc.
-		 * See also cpuset_zone_allowed() comment in kernel/cpuset.c.
+		 * Ignore cpuset mems for GFP_ATOMIC rather than fail, see the
+		 * comment for __cpuset_node_allowed_softwall().
 		 */
 		alloc_flags &= ~ALLOC_CPUSET;
 	} else if (unlikely(rt_task(current)) && !in_interrupt())
@@ -2516,10 +2534,6 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 		WARN_ON_ONCE(!(gfp_mask & __GFP_NOWARN));
 		return NULL;
 	}
-
-#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-	set_tsk_thread_flag(current, TIF_MEMALLOC);
-#endif
 
 	/*
 	 * GFP_THISNODE (meaning __GFP_THISNODE, __GFP_NORETRY and
@@ -2692,15 +2706,9 @@ rebalance:
 	}
 
 nopage:
-#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-	clear_tsk_thread_flag(current, TIF_MEMALLOC);
-#endif
 	warn_alloc_failed(gfp_mask, order, NULL);
 	return page;
 got_pg:
-#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-	clear_tsk_thread_flag(current, TIF_MEMALLOC);
-#endif
 	if (kmemcheck_enabled)
 		kmemcheck_pagealloc_alloc(page, order, gfp_mask);
 
@@ -5892,53 +5900,65 @@ static inline int pfn_to_bitidx(struct zone *zone, unsigned long pfn)
  * @end_bitidx: The last bit of interest
  * returns pageblock_bits flags
  */
-unsigned long get_pageblock_flags_group(struct page *page,
-					int start_bitidx, int end_bitidx)
+unsigned long get_pageblock_flags_mask(struct page *page,
+					unsigned long end_bitidx,
+					unsigned long mask)
 {
 	struct zone *zone;
 	unsigned long *bitmap;
-	unsigned long pfn, bitidx;
-	unsigned long flags = 0;
-	unsigned long value = 1;
+	unsigned long pfn, bitidx, word_bitidx;
+	unsigned long word;
 
 	zone = page_zone(page);
 	pfn = page_to_pfn(page);
 	bitmap = get_pageblock_bitmap(zone, pfn);
 	bitidx = pfn_to_bitidx(zone, pfn);
+	word_bitidx = bitidx / BITS_PER_LONG;
+	bitidx &= (BITS_PER_LONG-1);
 
-	for (; start_bitidx <= end_bitidx; start_bitidx++, value <<= 1)
-		if (test_bit(bitidx + start_bitidx, bitmap))
-			flags |= value;
-
-	return flags;
+	word = bitmap[word_bitidx];
+	bitidx += end_bitidx;
+	return (word >> (BITS_PER_LONG - bitidx - 1)) & mask;
 }
 
 /**
- * set_pageblock_flags_group - Set the requested group of flags for a pageblock_nr_pages block of pages
+ * set_pageblock_flags_mask - Set the requested group of flags for a pageblock_nr_pages block of pages
  * @page: The page within the block of interest
  * @start_bitidx: The first bit of interest
  * @end_bitidx: The last bit of interest
  * @flags: The flags to set
  */
-void set_pageblock_flags_group(struct page *page, unsigned long flags,
-					int start_bitidx, int end_bitidx)
+void set_pageblock_flags_mask(struct page *page, unsigned long flags,
+					unsigned long end_bitidx,
+					unsigned long mask)
 {
 	struct zone *zone;
 	unsigned long *bitmap;
-	unsigned long pfn, bitidx;
-	unsigned long value = 1;
+	unsigned long pfn, bitidx, word_bitidx;
+	unsigned long old_word, word;
+
+	BUILD_BUG_ON(NR_PAGEBLOCK_BITS != 4);
 
 	zone = page_zone(page);
 	pfn = page_to_pfn(page);
 	bitmap = get_pageblock_bitmap(zone, pfn);
 	bitidx = pfn_to_bitidx(zone, pfn);
+	word_bitidx = bitidx / BITS_PER_LONG;
+	bitidx &= (BITS_PER_LONG-1);
+
 	VM_BUG_ON(!zone_spans_pfn(zone, pfn));
 
-	for (; start_bitidx <= end_bitidx; start_bitidx++, value <<= 1)
-		if (flags & value)
-			__set_bit(bitidx + start_bitidx, bitmap);
-		else
-			__clear_bit(bitidx + start_bitidx, bitmap);
+	bitidx += end_bitidx;
+	mask <<= (BITS_PER_LONG - bitidx - 1);
+	flags <<= (BITS_PER_LONG - bitidx - 1);
+
+	word = ACCESS_ONCE(bitmap[word_bitidx]);
+	for (;;) {
+		old_word = cmpxchg(&bitmap[word_bitidx], word, (word & ~mask) | flags);
+		if (word == old_word)
+			break;
+		word = old_word;
+	}
 }
 
 /*
@@ -6223,6 +6243,14 @@ done:
 	undo_isolate_page_range(pfn_max_align_down(start),
 				pfn_max_align_up(end), migratetype);
 	cc.zone->cma_alloc = 0;
+	if (ret == 0) {
+		unsigned long pfn_index = start;
+		unsigned nr_pages = end - start;
+		for (; nr_pages--; pfn_index++) {
+			struct page *page = pfn_to_page(pfn_index);
+			set_page_owner(page, 0, GFP_KERNEL);
+		}
+	}
 	return ret;
 }
 
@@ -6406,6 +6434,9 @@ static const struct trace_print_flags pageflag_names[] = {
 #endif
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	{1UL << PG_compound_lock,	"compound_lock"	},
+#endif
+#ifdef CONFIG_KSM_CHECK_PAGE
+	{1UL << PG_ksm_scan0,           "PG_ksm_scan0"  },
 #endif
 	{1UL << PG_readahead,           "PG_readahead"  },
 };

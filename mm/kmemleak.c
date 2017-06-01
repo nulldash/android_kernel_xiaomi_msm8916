@@ -1092,6 +1092,7 @@ static bool update_checksum(struct kmemleak_object *object)
 		return false;
 
 	object->checksum = crc32(0, (void *)object->pointer, object->size);
+
 	return object->checksum != old_csum;
 }
 

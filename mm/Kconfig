@@ -316,6 +316,16 @@ config KSM
 	  until a program has madvised that an area is MADV_MERGEABLE, and
 	  root has set /sys/kernel/mm/ksm/run to 1 (if CONFIG_SYSFS is set).
 
+config KSM_CHECK_PAGE
+	bool "Check page before scanning"
+	depends on KSM
+	default n
+	help
+	  If enabled, this will check and skip if page is already scanned in
+	  same KSM scan cycle.
+	  This is useful in situation where you have parent and
+	  child process marking same area for KSM scanning.
+
 config DEFAULT_MMAP_MIN_ADDR
         int "Low address space to protect from user allocation"
 	depends on MMU
@@ -540,6 +550,19 @@ config BALANCE_ANON_FILE_RECLAIM
 
 config GENERIC_EARLY_IOREMAP
 	bool
+
+config KSWAPD_CPU_AFFINITY_MASK
+	string "kswapd cpu affinity mask"
+	depends on SMP
+	help
+	  Set the cpu affinity for the kswapd task.
+	  There can be power benefits on certain targets when limiting kswapd
+	  to run only on certain cores.
+	  The cpu affinity bitmask is represented by a hex string where commas
+	  group hex digits into chunks.  Each chunk defines exactly 32 bits of
+	  the resultant bitmask.
+	  For example to limit kswapd to the first 4 cores use the following:
+	  CONFIG_KSWAPD_CPU_AFFINITY_MASK="f"
 
 config PROCESS_RECLAIM
 	bool "Enable process reclaim"

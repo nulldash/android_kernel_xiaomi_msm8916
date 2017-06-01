@@ -28,6 +28,7 @@
 #include <linux/kmemleak.h>
 #include <linux/atomic.h>
 #include <linux/llist.h>
+#include <linux/sizes.h>
 #include <asm/uaccess.h>
 #include <asm/tlbflush.h>
 #include <asm/shmparam.h>
@@ -1099,15 +1100,16 @@ void vm_unmap_aliases(void)
 
 		rcu_read_lock();
 		list_for_each_entry_rcu(vb, &vbq->free, free_list) {
-			int i;
+			int i, j;
 
 			spin_lock(&vb->lock);
 			i = find_first_bit(vb->dirty_map, VMAP_BBMAP_BITS);
-			while (i < VMAP_BBMAP_BITS) {
+			if (i < VMAP_BBMAP_BITS) {
 				unsigned long s, e;
-				int j;
-				j = find_next_zero_bit(vb->dirty_map,
-					VMAP_BBMAP_BITS, i);
+
+				j = find_last_bit(vb->dirty_map,
+							VMAP_BBMAP_BITS);
+				j = j + 1; /* need exclusive index */
 
 				s = vb->va->va_start + (i << PAGE_SHIFT);
 				e = vb->va->va_start + (j << PAGE_SHIFT);
@@ -1117,10 +1119,6 @@ void vm_unmap_aliases(void)
 					start = s;
 				if (e > end)
 					end = e;
-
-				i = j;
-				i = find_next_bit(vb->dirty_map,
-							VMAP_BBMAP_BITS, i);
 			}
 			spin_unlock(&vb->lock);
 		}
@@ -1761,6 +1759,7 @@ fail:
  *	@end:		vm area range end
  *	@gfp_mask:	flags for the page level allocator
  *	@prot:		protection mask for the allocated pages
+ *	@vm_flags:	additional vm area flags (e.g. %VM_NO_GUARD)
  *	@node:		node to use for allocation or NUMA_NO_NODE
  *	@caller:	caller's return address
  *
@@ -1770,7 +1769,8 @@ fail:
  */
 void *__vmalloc_node_range(unsigned long size, unsigned long align,
 			unsigned long start, unsigned long end, gfp_t gfp_mask,
-			pgprot_t prot, int node, const void *caller)
+			pgprot_t prot, unsigned long vm_flags, int node,
+			const void *caller)
 {
 	struct vm_struct *area;
 	void *addr;
@@ -1785,8 +1785,8 @@ void *__vmalloc_node_range(unsigned long size, unsigned long align,
 	if (!size || (size >> PAGE_SHIFT) > total_pages)
 		goto fail;
 
-	area = __get_vm_area_node(size, align, VM_ALLOC | VM_UNLIST,
-				  start, end, node, gfp_mask, caller);
+	area = __get_vm_area_node(size, align, VM_ALLOC | VM_UNLIST | vm_flags,
+			start, end, node, gfp_mask, caller);
 	if (!area)
 		goto fail;
 
@@ -1835,7 +1835,7 @@ static void *__vmalloc_node(unsigned long size, unsigned long align,
 			    int node, const void *caller)
 {
 	return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
-				gfp_mask, prot, node, caller);
+				gfp_mask, prot, 0, node, caller);
 }
 
 void *__vmalloc(unsigned long size, gfp_t gfp_mask, pgprot_t prot)
@@ -2803,52 +2803,5 @@ static int __init proc_vmalloc_init(void)
 }
 module_init(proc_vmalloc_init);
 
-void get_vmalloc_info(struct vmalloc_info *vmi)
-{
-	struct vmap_area *va;
-	unsigned long free_area_size;
-	unsigned long prev_end;
-
-	vmi->used = 0;
-	vmi->largest_chunk = 0;
-
-	prev_end = VMALLOC_START;
-
-	spin_lock(&vmap_area_lock);
-
-	if (list_empty(&vmap_area_list)) {
-		vmi->largest_chunk = VMALLOC_TOTAL;
-		goto out;
-	}
-
-	list_for_each_entry(va, &vmap_area_list, list) {
-		unsigned long addr = va->va_start;
-
-		/*
-		 * Some archs keep another range for modules in vmalloc space
-		 */
-		if (addr < VMALLOC_START)
-			continue;
-		if (addr >= VMALLOC_END)
-			break;
-
-		if (va->flags & (VM_LAZY_FREE | VM_LAZY_FREEING))
-			continue;
-
-		vmi->used += (va->va_end - va->va_start);
-
-		free_area_size = addr - prev_end;
-		if (vmi->largest_chunk < free_area_size)
-			vmi->largest_chunk = free_area_size;
-
-		prev_end = va->va_end;
-	}
-
-	if (VMALLOC_END - prev_end > vmi->largest_chunk)
-		vmi->largest_chunk = VMALLOC_END - prev_end;
-
-out:
-	spin_unlock(&vmap_area_lock);
-}
 #endif
 
